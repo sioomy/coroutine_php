@@ -1,0 +1,8 @@
+coroutine_php.lo: /Users/wangxiuming/work/php-7.1.15/ext/coroutine_php/coroutine_php.c
+	$(LIBTOOL) --mode=compile $(CC) -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 -I. -I/Users/wangxiuming/work/php-7.1.15/ext/coroutine_php $(COMMON_FLAGS) $(CFLAGS_CLEAN) $(EXTRA_CFLAGS)  -c /Users/wangxiuming/work/php-7.1.15/ext/coroutine_php/coroutine_php.c -o coroutine_php.lo 
+$(phplibdir)/coroutine_php.la: ./coroutine_php.la
+	$(LIBTOOL) --mode=install cp ./coroutine_php.la $(phplibdir)
+
+./coroutine_php.la: $(shared_objects_coroutine_php) $(COROUTINE_PHP_SHARED_DEPENDENCIES)
+	$(LIBTOOL) --mode=link $(CC) $(COMMON_FLAGS) $(CFLAGS_CLEAN) $(EXTRA_CFLAGS) $(LDFLAGS) -o $@ -export-dynamic -avoid-version -prefer-pic -module -rpath $(phplibdir) $(EXTRA_LDFLAGS) $(shared_objects_coroutine_php) $(COROUTINE_PHP_SHARED_LIBADD)
+

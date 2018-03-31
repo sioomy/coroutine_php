@@ -1,0 +1,392 @@
+/*
+  +----------------------------------------------------------------------+
+  | PHP Version 7                                                        |
+  +----------------------------------------------------------------------+
+  | Copyright (c) 1997-2018 The PHP Group                                |
+  +----------------------------------------------------------------------+
+  | This source file is subject to version 3.01 of the PHP license,      |
+  | that is bundled with this package in the file LICENSE, and is        |
+  | available through the world-wide-web at the following url:           |
+  | http://www.php.net/license/3_01.txt                                  |
+  | If you did not receive a copy of the PHP license and are unable to   |
+  | obtain it through the world-wide-web, please send a note to          |
+  | license@php.net so we can mail you a copy immediately.               |
+  +----------------------------------------------------------------------+
+  | Author:                                                              |
+  +----------------------------------------------------------------------+
+*/
+
+/* $Id$ */
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include "php.h"
+#include "php_ini.h"
+#include "ext/standard/info.h"
+#include "php_coroutine_php.h"
+
+#include <event2/event.h>
+/* For sockaddr_in */  
+#include <netinet/in.h>
+
+/* If you declare any globals in php_coroutine_php.h uncomment this:
+ZEND_DECLARE_MODULE_GLOBALS(coroutine_php)
+*/
+
+/* True global resources - no need for thread safety here */
+static int le_coroutine_php;
+
+
+#define MAX_LINE 80  
+
+void do_read(evutil_socket_t fd, short events, void *arg);  
+void do_write(evutil_socket_t fd, short events, void *arg);  
+  
+char rot13_char(char c)  
+{  
+    /* We don't want to use isalpha here; setting the locale would change 
+     * which characters are considered alphabetical. */  
+    if ((c >= 'a' && c <= 'm') || (c >= 'A' && c <= 'M'))  
+        return c + 13;  
+    else if ((c >= 'n' && c <= 'z') || (c >= 'N' && c <= 'Z'))  
+        return c - 13;  
+    else  
+        return c;  
+}  
+  
+struct fd_state {  
+    char buffer[MAX_LINE];  
+    size_t buffer_used;  
+  
+    size_t n_written;  
+    size_t write_upto;  
+  
+    struct event *read_event;  
+    struct event *write_event;  
+};  
+  
+struct fd_state * alloc_fd_state(struct event_base *base, evutil_socket_t fd)  
+{  
+    struct fd_state *state = malloc(sizeof(struct fd_state));  
+    if (!state)  
+        return NULL;  
+  
+    state->read_event = event_new(base, fd, EV_READ|EV_PERSIST, do_read, state);  
+    if (!state->read_event)  
+    {  
+        free(state);  
+        return NULL;  
+    }  
+  
+    state->write_event = event_new(base, fd, EV_WRITE|EV_PERSIST, do_write, state);  
+    if (!state->write_event)  
+    {  
+        event_free(state->read_event);  
+        free(state);  
+        return NULL;  
+    }  
+  
+    state->buffer_used = state->n_written = state->write_upto = 0;  
+  
+    assert(state->write_event);  
+    return state;  
+}  
+  
+void free_fd_state(struct fd_state *state)  
+{  
+    event_free(state->read_event);  
+    event_free(state->write_event);  
+    free(state);  
+}  
+  
+void do_read(evutil_socket_t fd, short events, void *arg)  
+{  
+    struct fd_state *state = arg;  
+    char buf[20];  
+    int i;  
+    ssize_t result;  
+    printf("\ncome in do_read: fd: %d, state->buffer_used: %d, sizeof(state->buffer): %d\n", fd, state->buffer_used, sizeof(state->buffer));  
+    while (1)  
+    {  
+        assert(state->write_event);  
+        result = recv(fd, buf, sizeof(buf), 0);  
+        if (result <= 0)  
+            break;  
+        printf("recv once, fd: %d, recv size: %d, recv buff: %s\n", fd, result, buf);  
+  
+        for (i=0; i < result; ++i)  
+        {  
+            if (state->buffer_used < sizeof(state->buffer))//如果读事件的缓冲区还未满，将收到的数据做转换  
+                state->buffer[state->buffer_used++] = rot13_char(buf[i]);  
+//              state->buffer[state->buffer_used++] = buf[i];//接收什么发送什么，不经过转换，测试用  
+            if (buf[i] == '\n') //如果遇到换行，添加写事件，并设置写事件的大小  
+            {  
+                assert(state->write_event);  
+                event_add(state->write_event, NULL);  
+                state->write_upto = state->buffer_used;  
+                printf("遇到换行符，state->write_upto: %d, state->buffer_used: %d\n",state->write_upto, state->buffer_used);  
+            }  
+        }  
+        printf("recv once, state->buffer_used: %d\n", state->buffer_used);  
+    }  
+    printf("read ok !!!!\n");
+    //判断最后一次接收的字节数  
+    if (result == 0)  
+    {  
+        free_fd_state(state);  
+    }  
+    else if (result < 0)  
+    {  
+        if (errno == EAGAIN) // XXXX use evutil macro  
+            return;  
+        perror("recv");  
+        free_fd_state(state);  
+    }  
+}  
+  
+void do_write(evutil_socket_t fd, short events, void *arg)  
+{  
+    struct fd_state *state = arg;  
+  
+    printf("\ncome in do_write, fd: %d, state->n_written: %d, state->write_upto: %d\n",fd, state->n_written, state->write_upto);  
+    while (state->n_written < state->write_upto)  
+    {  
+        ssize_t result = send(fd, state->buffer + state->n_written, state->write_upto - state->n_written, 0);  
+        if (result < 0) {  
+            if (errno == EAGAIN) // XXX use evutil macro  
+                return;  
+            free_fd_state(state);  
+            return;  
+        }  
+        assert(result != 0);  
+  
+        state->n_written += result;  
+        printf("send fd: %d, send size: %d, state->n_written: %d\n", fd, result, state->n_written);  
+    }  
+  
+    if (state->n_written == state->buffer_used)  
+    {  
+        printf("state->n_written == state->buffer_used: %d\n", state->n_written);  
+        state->n_written = state->write_upto = state->buffer_used = 1;  
+        printf("state->n_written = state->write_upto = state->buffer_used = 1\n");  
+        printf("close !!\n");
+        close(fd);
+    }  
+  
+    event_del(state->write_event);  
+}
+
+void do_accept(evutil_socket_t listener, short event, void *arg)  
+{  
+    struct event_base *base = arg;  
+    struct sockaddr_storage ss;  
+    socklen_t slen = sizeof(ss);  
+    int fd = accept(listener, (struct sockaddr*)&ss, &slen);  
+    if (fd < 0)  
+    { // XXXX eagain??  
+        perror("accept");  
+    }  
+    else if (fd > FD_SETSIZE)  
+    {  
+        close(fd); // XXX replace all closes with EVUTIL_CLOSESOCKET */  
+    }  
+    else  
+    {  
+        php_printf("accept!");
+        struct fd_state *state;  
+        evutil_make_socket_nonblocking(fd);  
+        state = alloc_fd_state(base, fd);  
+        php_printf("alloc_fd_state ====== done!");
+        assert(state); /*XXX err*/  
+        assert(state->write_event);  
+        event_add(state->read_event, NULL);  
+    }  
+}  
+
+
+
+/* {{{ PHP_INI
+ */
+/* Remove comments and fill if you need to have entries in php.ini
+PHP_INI_BEGIN()
+    STD_PHP_INI_ENTRY("coroutine_php.global_value",      "42", PHP_INI_ALL, OnUpdateLong, global_value, zend_coroutine_php_globals, coroutine_php_globals)
+    STD_PHP_INI_ENTRY("coroutine_php.global_string", "foobar", PHP_INI_ALL, OnUpdateString, global_string, zend_coroutine_php_globals, coroutine_php_globals)
+PHP_INI_END()
+*/
+/* }}} */
+
+/* Remove the following function when you have successfully modified config.m4
+   so that your module can be compiled into PHP, it exists only for testing
+   purposes. */
+
+/* Every user-visible function in PHP should document itself in the source */
+/* {{{ proto string coroutine_php_init(string arg)
+   Return a string to confirm that the module is compiled in */
+PHP_FUNCTION(coroutine_php_init)
+{
+    evutil_socket_t listener;
+    struct sockaddr_in sin;
+    struct event_base *base;
+    struct event *listener_event;
+    base = event_base_new();//初始化libevent
+    if (!base)  
+        return; /*XXXerr*/  
+
+    sin.sin_family = AF_INET;  
+    sin.sin_addr.s_addr = 0;//本机  
+    sin.sin_port = htons(8002); 
+    listener = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (bind(listener, (struct sockaddr*)&sin, sizeof(sin)) < 0)  
+    {  
+        php_printf("bind");  
+        return;  
+　　 }
+
+    if (listen(listener, 16)<0)  
+　　 {  
+　　     php_printf("listen");  
+　　     return;  
+　　 }
+    listener_event = event_new(base, listener, EV_READ|EV_PERSIST, do_accept, (void*)base);
+    evutil_make_socket_nonblocking(listener);
+
+
+    /*XXX check it */  
+    event_add(listener_event, NULL);
+    event_base_dispatch(base);
+
+	/*
+	char *arg = NULL;
+	size_t arg_len, len;
+	zend_string *strg;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &arg, &arg_len) == FAILURE) {
+		return;
+	}
+
+	strg = strpprintf(0, "Congratulations! You have successfully modified ext/%.78s/config.m4. Module %.78s is now compiled into PHP.", "coroutine_php", arg);
+
+	RETURN_STR(strg);
+	*/
+	//php_printf("hello world!");
+}
+/* }}} */
+/* The previous line is meant for vim and emacs, so it can correctly fold and
+   unfold functions in source code. See the corresponding marks just before
+   function definition, where the functions purpose is also documented. Please
+   follow this convention for the convenience of others editing your code.
+*/
+
+
+/* {{{ php_coroutine_php_init_globals
+ */
+/* Uncomment this function if you have INI entries
+static void php_coroutine_php_init_globals(zend_coroutine_php_globals *coroutine_php_globals)
+{
+	coroutine_php_globals->global_value = 0;
+	coroutine_php_globals->global_string = NULL;
+}
+*/
+/* }}} */
+
+/* {{{ PHP_MINIT_FUNCTION
+ */
+PHP_MINIT_FUNCTION(coroutine_php)
+{
+	/* If you have INI entries, uncomment these lines
+	REGISTER_INI_ENTRIES();
+	*/
+	return SUCCESS;
+}
+/* }}} */
+
+/* {{{ PHP_MSHUTDOWN_FUNCTION
+ */
+PHP_MSHUTDOWN_FUNCTION(coroutine_php)
+{
+	/* uncomment this line if you have INI entries
+	UNREGISTER_INI_ENTRIES();
+	*/
+	return SUCCESS;
+}
+/* }}} */
+
+/* Remove if there's nothing to do at request start */
+/* {{{ PHP_RINIT_FUNCTION
+ */
+PHP_RINIT_FUNCTION(coroutine_php)
+{
+#if defined(COMPILE_DL_COROUTINE_PHP) && defined(ZTS)
+	ZEND_TSRMLS_CACHE_UPDATE();
+#endif
+	return SUCCESS;
+}
+/* }}} */
+
+/* Remove if there's nothing to do at request end */
+/* {{{ PHP_RSHUTDOWN_FUNCTION
+ */
+PHP_RSHUTDOWN_FUNCTION(coroutine_php)
+{
+	return SUCCESS;
+}
+/* }}} */
+
+/* {{{ PHP_MINFO_FUNCTION
+ */
+PHP_MINFO_FUNCTION(coroutine_php)
+{
+	php_info_print_table_start();
+	php_info_print_table_header(2, "coroutine_php support", "enabled");
+	php_info_print_table_end();
+
+	/* Remove comments if you have entries in php.ini
+	DISPLAY_INI_ENTRIES();
+	*/
+}
+/* }}} */
+
+/* {{{ coroutine_php_functions[]
+ *
+ * Every user visible function must have an entry in coroutine_php_functions[].
+ */
+const zend_function_entry coroutine_php_functions[] = {
+	PHP_FE(coroutine_php_init,	NULL)		/* For testing, remove later. */
+	PHP_FE_END	/* Must be the last line in coroutine_php_functions[] */
+};
+/* }}} */
+
+/* {{{ coroutine_php_module_entry
+ */
+zend_module_entry coroutine_php_module_entry = {
+	STANDARD_MODULE_HEADER,
+	"coroutine_php",
+	coroutine_php_functions,
+	PHP_MINIT(coroutine_php),
+	PHP_MSHUTDOWN(coroutine_php),
+	PHP_RINIT(coroutine_php),		/* Replace with NULL if there's nothing to do at request start */
+	PHP_RSHUTDOWN(coroutine_php),	/* Replace with NULL if there's nothing to do at request end */
+	PHP_MINFO(coroutine_php),
+	PHP_COROUTINE_PHP_VERSION,
+	STANDARD_MODULE_PROPERTIES
+};
+/* }}} */
+
+#ifdef COMPILE_DL_COROUTINE_PHP
+#ifdef ZTS
+ZEND_TSRMLS_CACHE_DEFINE()
+#endif
+ZEND_GET_MODULE(coroutine_php)
+#endif
+
+/*
+ * Local variables:
+ * tab-width: 4
+ * c-basic-offset: 4
+ * End:
+ * vim600: noet sw=4 ts=4 fdm=marker
+ * vim<600: noet sw=4 ts=4
+ */
