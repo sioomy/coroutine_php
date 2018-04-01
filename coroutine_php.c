@@ -38,84 +38,30 @@ ZEND_DECLARE_MODULE_GLOBALS(coroutine_php)
 */
 
 /* True global resources - no need for thread safety here */
+#define CORO_DEFAULT 0
+#define CORO_YIELD 1
+#define CORO_END 2
+#define CORO_RESUME 3
+
+
 static int le_coroutine_php;
 
-
-void generic_handler(struct evhttp_request *req, void *arg )
+typedef struct _php_coroutine_context php_coroutine_context;
+struct _php_coroutine_context
 {
-    
-    struct evbuffer *buf = evbuffer_new();
-    if(!buf)
-    {
-        puts("failed to create response buffer \n");
-        return;
-    }
+  jmp_buf *buf_ptr;
+  zend_execute_data *execute_data;
+  zend_fcall_info_cache* func_cache;
+  php_coroutine_context *next;
+  php_coroutine_context *prev;
+  int coro_state;
+  zend_vm_stack current_vm_stack;
+  intptr_t current_vm_stack_top;
+  intptr_t current_vm_stack_end;
+  int jumidx;
+  char *cb_name;
 
-    evbuffer_add_printf(buf, "Server Responsed. Requested: %s\n", evhttp_request_get_uri(req));
-    evhttp_send_reply(req, HTTP_OK, "OK", buf);
-    evbuffer_free(buf);
-    
-}
-
-/* {{{ PHP_INI
- */
-/* Remove comments and fill if you need to have entries in php.ini
-PHP_INI_BEGIN()
-    STD_PHP_INI_ENTRY("coroutine_php.global_value",      "42", PHP_INI_ALL, OnUpdateLong, global_value, zend_coroutine_php_globals, coroutine_php_globals)
-    STD_PHP_INI_ENTRY("coroutine_php.global_string", "foobar", PHP_INI_ALL, OnUpdateString, global_string, zend_coroutine_php_globals, coroutine_php_globals)
-PHP_INI_END()
-*/
-/* }}} */
-
-/* Remove the following function when you have successfully modified config.m4
-   so that your module can be compiled into PHP, it exists only for testing
-   purposes. */
-
-/* Every user-visible function in PHP should document itself in the source */
-/* {{{ proto string coroutine_php_init(string arg)
-   Return a string to confirm that the module is compiled in */
-PHP_FUNCTION(coroutine_php_init)
-{
-    short          http_port = 8003;
-    char          *http_addr = "127.0.0.1";
-    
-    struct event_base * base = event_base_new();
-    struct evhttp * http_server = evhttp_new(base);
-    if(!http_server)
-    {
-        php_printf("http_server error !");
-    }
-    int ret = evhttp_bind_socket(http_server,http_addr,http_port);
-    if(ret!=0)
-    {
-        php_printf("http_server error !");
-    }
-    
-    evhttp_set_gencb(http_server, generic_handler, NULL);
-
-    php_printf("HTTP START !");
-    event_base_dispatch(base);
-
-    evhttp_free(http_server);
-
-    //WSACleanup();
-
-	/*
-	char *arg = NULL;
-	size_t arg_len, len;
-	zend_string *strg;
-
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &arg, &arg_len) == FAILURE) {
-		return;
-	}
-
-	strg = strpprintf(0, "Congratulations! You have successfully modified ext/%.78s/config.m4. Module %.78s is now compiled into PHP.", "coroutine_php", arg);
-
-	RETURN_STR(strg);
-	*/
-	//php_printf("hello world!");
-}
-
+}Php_coroutine_context;
 
 static int cp_zend_is_callable_ex(zval *cb, zval *object , uint a, char **cb_name,zend_fcall_info_cache *cbcache,char **error TSRMLS_DC)
 {
@@ -129,442 +75,201 @@ static int cp_zend_is_callable_ex(zval *cb, zval *object , uint a, char **cb_nam
 
 
 
-typedef struct _php_coroutine_context php_coroutine_context;
-struct _php_coroutine_context
-{
-  jmp_buf *buf_ptr;
-  zval *callback;
-  zend_op_array *op_array;
-  zend_fcall_info_cache *func_cache;
-  zend_execute_data *execute_data;
-  zend_execute_data *origin_execute_data;
-  intptr_t op_idx;
-  zend_vm_stack origin_vm_stack;
-  intptr_t origin_vm_stack_top;
-  intptr_t origin_vm_stack_end;
-  zend_vm_stack current_vm_stack;
-  intptr_t current_vm_stack_top;
-  intptr_t current_vm_stack_end;
+/* use to stor coroutine context */
 
-}Php_coroutine_context;
+static php_coroutine_context* current_coroutine_context;
+static int coroutine_context_count;
+static jmp_buf *coro_contorler_ptr;
 
+static void free_coroutine_context(php_coroutine_context* context){
+    if(coroutine_context_count>0){
+        coroutine_context_count--;
 
+        php_printf("free_coroutine_context: %d\n",context);
+        //unlink
+        context->prev->next = context->next;
+        context->next->prev = context->prev;
+        //todo free all data
+        efree(context->buf_ptr);
+        efree(context->func_cache);
+        context->buf_ptr = NULL;
+        context->func_cache = NULL;
+        zend_vm_stack_free_call_frame(context->execute_data); //释放execute_data:销毁所有的PHP变量
+        efree(context);
+        context = NULL;
 
-ZEND_API void cp_zend_execute(zend_op_array *op_array, zval *return_value,php_coroutine_context *context)
-{
-    zend_execute_data *execute_data;
-
-    if (EG(exception) != NULL) {
-        return;
     }
-
-    //分配zend_execute_data
-    execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_CODE,
-            (zend_function*)op_array, 0, zend_get_called_scope(EG(current_execute_data)), zend_get_this_object(EG(current_execute_data)));
-    if (EG(current_execute_data)) {
-        execute_data->symbol_table = zend_rebuild_symbol_table();
-    } else {
-        execute_data->symbol_table = &EG(symbol_table);
-    }
-
-    //EX(prev_execute_data) = EG(current_execute_data); //=> execute_data->prev_execute_data = EG(current_execute_data);
-    //i_init_execute_data(execute_data, op_array, return_value); //初始化execute_data
-    zend_init_execute_data(execute_data,op_array,return_value);
-    php_printf("cp_zend_execute execute_data:%d\n",execute_data);
-    context->execute_data = execute_data;
-    zend_execute_ex(execute_data); //执行opcode
-    php_printf("cp_zend_execute execute_data:%d\n",execute_data);
-    
-    //zend_vm_stack_free_call_frame(execute_data); //释放execute_data:销毁所有的PHP变量
 }
 
-ZEND_API void cp_zend_execute_resume(zend_op_array *op_array, zval *return_value)
-{
-
-    zend_execute_data *execute_data;
-
-
-
-    if (EG(exception) != NULL) {
-        return;
+static void coro_contorler_run(){
+    php_printf("loop begin:\n");
+    setjmp(*coro_contorler_ptr);
+    if(setjmp(*coro_contorler_ptr) == CORO_YIELD){
+        current_coroutine_context = current_coroutine_context->next;//swich to next corotine
     }
 
-    //分配zend_execute_data
-    execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_CODE,
-            (zend_function*)op_array, 0, zend_get_called_scope(EG(current_execute_data)), zend_get_this_object(EG(current_execute_data)));
-    // if (EG(current_execute_data)) {
-    //     execute_data->symbol_table = zend_rebuild_symbol_table();
-    // } else {
-    //     execute_data->symbol_table = &EG(symbol_table);
-    // }
+    switch(current_coroutine_context->coro_state){
+        case CORO_YIELD://if type is yield then continue
+            php_printf("coro yield:%d\n",current_coroutine_context);
+            longjmp(*current_coroutine_context->buf_ptr,CORO_YIELD);
+            break;
+        case CORO_DEFAULT:
+            //php_printf("coro next%d\n",current_coroutine_context);
+            EG(current_execute_data) = current_coroutine_context->execute_data;
+            //zend_execute_ex(EG(current_execute_data));
+            break;
+        case CORO_END://will not be run
+            php_printf("coro end%d\n",current_coroutine_context);
+            zend_execute_ex(EG(current_execute_data));
+            free_coroutine_context(current_coroutine_context->prev);
+            break;
+
+    }
 
 
+    zval* ret;
+    //php_printf("current_coroutine_context->execute_data:%d\n", current_coroutine_context->execute_data);
+    // zend_init_execute_data(EG(current_execute_data),op_array,NULL);
+    zend_execute_ex(current_coroutine_context->execute_data);
 
+    //call_user_function_ex(EG(function_table), NULL, "hello", &ret, 0, NULL, 0, EG(active_symbol_table));
+    //call_user_function_ex(EG(function_table), NULL, current_coroutine_context->cb_name, NULL, 0, NULL, 0, NULL TSRMLS_CC);
 
+    php_printf("current_coroutine_context->prev:%d\n", current_coroutine_context->prev);
+    current_coroutine_context->coro_state = CORO_END;
+    current_coroutine_context = current_coroutine_context->next;
+    php_printf("free_coroutine_context1: %d\n",current_coroutine_context->prev);
+    free_coroutine_context(current_coroutine_context->prev);
+    //todo free current_coroutine_context
+    //php_printf("free_coroutine_context2: %d\n",current_coroutine_context->prev);
+    php_printf("loop end:\n");
+    //coroutine_context_count--;
+    if(coroutine_context_count>0){
 
-    //EX(prev_execute_data) = EG(current_execute_data); //=> execute_data->prev_execute_data = EG(current_execute_data);
-    //i_init_execute_data(execute_data, op_array, return_value); //初始化execute_data
-    zend_init_execute_data(execute_data,op_array,return_value);
+        coro_contorler_run();
+    }
 
-    zend_execute_ex(execute_data); //执行opcode
-   
-    //zend_vm_stack_free_call_frame(execute_data); //释放execute_data:销毁所有的PHP变量
 }
 
-
-PHP_FUNCTION(php_coro_create)
-{
-  php_coroutine_context *context = NULL;
-  jmp_buf *php_setjmp_jmp_buf = NULL;
-  context = emalloc(sizeof(php_coroutine_context));
-  php_setjmp_jmp_buf = emalloc(sizeof(jmp_buf));
-  context->buf_ptr = php_setjmp_jmp_buf;
-
-  //context->callback = emalloc(sizeof(zval));
-  context->func_cache = emalloc(sizeof(zend_fcall_info_cache));
-
-  php_printf("php_coro_create buf_ptr:%d\n",php_setjmp_jmp_buf);
-  php_printf("php_coro_create context:%d\n",context);
-  RETURN_LONG((intptr_t)context);
-}
 
 PHP_FUNCTION(php_coro_init)
 {
-    
-    php_coroutine_context *context = NULL;
-    char *cb_name = NULL;
-    zval *ret;
-    zval *callback = NULL;
+    coroutine_context_count = 0;
+    coro_contorler_ptr = emalloc(sizeof(jmp_buf));
+    RETURN_TRUE;
+}
 
-    int r;
-    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "lz", &context,&callback,sizeof(intptr_t)) == FAILURE) 
+PHP_FUNCTION(php_coro_addfun)
+{
+    zval *callback = NULL;
+    php_coroutine_context *context = NULL;
+    zval *ret;
+    char *cb_name = NULL;
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z",&callback) == FAILURE) 
     {
       RETURN_FALSE;
     }
+    context = emalloc(sizeof(php_coroutine_context));
+    context->coro_state = CORO_DEFAULT;
+    context->buf_ptr = emalloc(sizeof(jmp_buf));
+    context->func_cache = emalloc(sizeof(zend_fcall_info_cache));
+    context->jumidx = 0; 
+    //php_printf("php_coro_addfun  context:%d,buf_ptr:%d,\n",context,context->buf_ptr);
 
-    context->callback = callback;
-
-    context->origin_vm_stack = EG(vm_stack);
-    context->origin_vm_stack_top = EG(vm_stack_top);
-    context->origin_vm_stack_end = EG(vm_stack_end);
-
-    context->origin_execute_data = EG(current_execute_data);
-
-    php_printf("php_coro_init EG(vm_stack):%d\n",EG(vm_stack));
-    php_printf("php_coro_init EG(vm_stack_top):%d\n",EG(vm_stack_top));
-    php_printf("php_coro_init EG(vm_stack_end):%d\n",EG(vm_stack_end));
-    php_printf("php_coro_init context->origin_vm_stack:%d\n",context->origin_vm_stack);
-    php_printf("php_coro_init context->origin_vm_stack_top:%d\n",context->origin_vm_stack_top);
-    php_printf("php_coro_init context->origin_vm_stack_end:%d\n",context->origin_vm_stack_end);
-    php_printf("php_coro_init context->current_vm_stack:%d\n",context->current_vm_stack);
-    php_printf("php_coro_init context->current_vm_stack_top:%d\n",context->current_vm_stack_top);
-    php_printf("php_coro_init context->current_vm_stack_end:%d\n",context->current_vm_stack_end);
-    php_printf("php_coro_init EG(current_execute_data)->prev_execute_data:%d\n",EG(current_execute_data)->prev_execute_data);
-
-
-    //声明function cache
-    php_printf("setjmp struct:%d\n",context->buf_ptr);
-    //setjmp 放在cp_zend_is_callable_ex下面就会有问题
-    r = setjmp(*context->buf_ptr);
-    //赋值
-    if(!cp_zend_is_callable_ex(context->callback, NULL, 0, &cb_name,context->func_cache,NULL TSRMLS_CC)){
+    if(!cp_zend_is_callable_ex(callback, NULL, 0, &cb_name,context->func_cache,NULL TSRMLS_CC)){
       RETURN_FALSE;
-    } 
-
-    //获取oparray
-    context->op_array = (zend_op_array *)context->func_cache->function_handler;
-    //cp_zend_execute(context->op_array,ret);
-
-
-    // zend_execute_data *execute_data2;
-
-    // if (EG(exception) != NULL) {
-    //   return;
-    // }
-
-    // execute_data2 = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_CODE | ZEND_CALL_HAS_SYMBOL_TABLE,
-    //   (zend_function*)context->op_array, 0, zend_get_called_scope(EG(current_execute_data)), zend_get_this_object(EG(current_execute_data)));
-    // if (EG(current_execute_data)) {
-    //   execute_data2->symbol_table = zend_rebuild_symbol_table();
-    // } else {
-    //   execute_data2->symbol_table = &EG(symbol_table);
-    // }
-    // // EX(prev_execute_data) = EG(current_execute_data);
-    // // i_init_execute_data(execute_data, context->op_array, return_value);
-    // zend_init_execute_data(execute_data2,context->op_array,ret);
-    // zend_execute_ex(execute_data2);
-    // zend_vm_stack_free_call_frame(execute_data2);
-
-
-
-
-
-
-
-
-
-
-    //efree(cb_name);先不释放
-    //printf("php_setjmp_jmp_buf:%ld\n",(intptr_t)context->buf_ptr);//输出跳转就报错
-
-    switch(r){
-      case 0://init
-        //printf("init\n",r);
-        //cp_zend_execute(context->op_array,ret); 
-        php_printf("php_coro_resume zend_execute_ex:%d\n",zend_execute_ex);
-
-        cp_zend_execute(context->op_array,ret,context);
-        /*
-        if (EG(exception) != NULL) {
-            return;
-        }
-
-        //分配zend_execute_data
-        context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_CODE,
-                (zend_function*)context->op_array, 0, zend_get_called_scope(EG(current_execute_data)), zend_get_this_object(EG(current_execute_data)));
-        if (EG(current_execute_data)) {
-            context->execute_data->symbol_table = zend_rebuild_symbol_table();
-        } else {
-            context->execute_data->symbol_table = &EG(symbol_table);
-        }
-
-        //EX(prev_execute_data) = EG(current_execute_data); //=> execute_data->prev_execute_data = EG(current_execute_data);
-        //i_init_execute_data(execute_data, op_array, ret); //初始化execute_data
-        zend_init_execute_data(context->execute_data,context->op_array,ret);
-
-        zend_execute_ex(context->execute_data); //执行opcode
-        zend_vm_stack_free_call_frame(context->execute_data); //释放execute_data:销毁所有的PHP变量
-
-        */
-        break;
-      case 1://yield
-        //printf("yield\n",r);
-        break;
     }
+    context->cb_name = cb_name;
+    // php_printf("php_coro_addfun callback:%d\n", callback);
 
-    //printf("jmpretrun\n",r);
-    RETURN_TRUE;
-    
-}
+    // php_printf("php_coro_addfun func_cache:%d\n", func_cache);
 
-PHP_FUNCTION(php_coro_yield)
-{
-    jmp_buf *ptr = NULL;
-    php_coroutine_context *context = NULL;
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "l", &context,sizeof(intptr_t)) == FAILURE) {
-        return;//
-    }
+    zend_op_array* op_array = (zend_op_array *)context->func_cache->function_handler;
+
+
+    zend_vm_stack_init();
 
     context->current_vm_stack = EG(vm_stack);
     context->current_vm_stack_top = EG(vm_stack_top);
     context->current_vm_stack_end = EG(vm_stack_end);
 
-
-    php_printf("php_coro_yield EG(vm_stack):%d\n",EG(vm_stack));
-    php_printf("php_coro_yield EG(vm_stack_top):%d\n",EG(vm_stack_top));
-    php_printf("php_coro_yield EG(vm_stack_end):%d\n",EG(vm_stack_end));
-    php_printf("php_coro_yield context->current_vm_stack:%d\n",context->current_vm_stack);
-    php_printf("php_coro_yield context->current_vm_stack_top:%d\n",context->current_vm_stack_top);
-    php_printf("php_coro_yield context->current_vm_stack_end:%d\n",context->current_vm_stack_end);
-    php_printf("php_coro_yield context->origin_vm_stack:%d\n",context->origin_vm_stack);
-    php_printf("php_coro_yield context->origin_vm_stack_top:%d\n",context->origin_vm_stack_top);
-    php_printf("php_coro_yield context->origin_vm_stack_end:%d\n",context->origin_vm_stack_end);
+    //php_printf("php_coro_addfun  context:%d,buf_ptr:%d,\n",context,context->buf_ptr);
 
 
 
+    //zend_execute(op_array,ret);
 
-    // EG(vm_stack) = context->origin_vm_stack;
-    // EG(vm_stack_top) = context->origin_vm_stack_top;
-    // EG(vm_stack_end) = context->origin_vm_stack_end;
+    // php_printf("php_coro_addfun op_array:%d\n", op_array);
 
-    php_printf("php_coro_yield context:%d\n",context);
+    // //分配zend_execute_data
+    context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_CODE,
+            (zend_function*)op_array, 0, zend_get_called_scope(EG(current_execute_data)), zend_get_this_object(EG(current_execute_data)));
+    
 
-    ptr = context->buf_ptr;
-    context->op_idx = context->op_array->opcodes;
-    php_printf("php_coro_yield context->op_idx:%d\n",context->op_idx);
+    if (EG(current_execute_data)) {
+        context->execute_data->symbol_table = zend_rebuild_symbol_table();
+    } else {
+        context->execute_data->symbol_table = &EG(symbol_table);
+    }
 
-    php_printf("php_coro_resume zend_execute_ex:%d\n",zend_execute_ex);
-    longjmp(*ptr,1);//1 yield
+    zend_init_execute_data(context->execute_data,op_array,NULL);
+
+    if(!current_coroutine_context){
+        current_coroutine_context = context;
+    }
+
+    //link linktable
+    if(coroutine_context_count == 0){
+        context->next = context;
+        context->prev = context;
+    }else{
+        context->prev = current_coroutine_context->prev;
+        context->prev->next = context;
+        context->next = current_coroutine_context;
+        context->next->prev = context; 
+    }
+    php_printf("context->execute_data:%d\n", context->execute_data);
+    //php_printf("context->prev:%d\n", context->prev);
+    //php_printf("context:%d\n", context);
+    coroutine_context_count++;
     RETURN_TRUE;
 }
 
-
-
-PHP_FUNCTION(php_coro_resume)
+PHP_FUNCTION(php_coro_yield)
 {
-    
-    zval *ret;
-    zend_execute_data *current_execute_data;
-    //jmp_buf *ptr = NULL;
+    php_printf("=========php_coro_yield run======\n");
 
-    php_coroutine_context *context = NULL;
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "l", &context,sizeof(intptr_t)) == FAILURE) 
-    {
-        return;//
+    int r = setjmp(*current_coroutine_context->buf_ptr);
+    php_printf("r:%d\n",r);
+    if(!r){
+        php_printf("php_coro_yield  current_coroutine_context:%d,buf_ptr:%d,\n",current_coroutine_context,current_coroutine_context->buf_ptr);
+        current_coroutine_context->coro_state = CORO_YIELD;
+        longjmp(*coro_contorler_ptr,CORO_YIELD);
+    }else{
+        current_coroutine_context->jumidx++;
+        //setjmp(*current_coroutine_context->buf_ptr);
+        efree(*current_coroutine_context->buf_ptr);
+        EG(vm_stack) = current_coroutine_context->current_vm_stack;
+        EG(vm_stack_top) = current_coroutine_context->current_vm_stack_top;
+        EG(vm_stack_end) = current_coroutine_context->current_vm_stack_end;
+        // EG(current_execute_data)->opline++;
+        php_printf("php_coro_yield  current_coroutine_context:%d,buf_ptr:%d,\n",current_coroutine_context,current_coroutine_context->buf_ptr);
+        php_printf("=========have resume======\n");
+        
+
+        longjmp(*current_coroutine_context->buf_ptr,2);
+        
     }
-
-
-    current_execute_data = context->execute_data;
-    // current_execute_data->prev_execute_data = EG(current_execute_data);
-    // current_execute_data->return_value = ret;
-    // current_execute_data->opline -=4;
-    //current_execute_data->opline++;
-    // //current_execute_data->symbol_table = zend_rebuild_symbol_table();
-
-
-    php_printf("php_coro_resume EG(vm_stack):%d\n",EG(vm_stack));
-    php_printf("php_coro_resume EG(vm_stack_top):%d\n",EG(vm_stack_top));
-    php_printf("php_coro_resume EG(vm_stack_end):%d\n",EG(vm_stack_end));
-    php_printf("php_coro_resume context->current_vm_stack:%d\n",context->current_vm_stack);
-    php_printf("php_coro_resume context->current_vm_stack_top:%d\n",context->current_vm_stack_top);
-    php_printf("php_coro_resume context->current_vm_stack_end:%d\n",context->current_vm_stack_end);
-    php_printf("php_coro_resume context->origin_vm_stack:%d\n",context->origin_vm_stack);
-    php_printf("php_coro_resume context->origin_vm_stack_top:%d\n",context->origin_vm_stack_top);
-    php_printf("php_coro_resume context->origin_vm_stack_end:%d\n",context->origin_vm_stack_end);
-    php_printf("php_coro_resume EG(current_execute_data):%d\n",EG(current_execute_data));
-    php_printf("php_coro_resume EG(current_execute_data)->prev_execute_data:%d\n",EG(current_execute_data)->prev_execute_data);
-    php_printf("php_coro_resume current_execute_data:%d\n",current_execute_data);
-
-
-
-    // if (ZEND_CALL_INFO(current_execute_data) & ZEND_CALL_RELEASE_THIS)
-    // {
-    //     zval_ptr_dtor(&(current_execute_data->This));
-    // }
-
-
-
-    // zend_vm_stack_free_args(current_execute_data);
-    // zend_vm_stack_free_call_frame(current_execute_data);
-
-    current_execute_data->prev_execute_data = EG(current_execute_data);
-    EG(current_execute_data) = current_execute_data;
-
-    EG(current_execute_data)->opline +=1;
-
-    // php_printf("php_coro_resume context->origin_vm_stack:%d\n",context->origin_vm_stack);
-    // EG(vm_stack) = context->current_vm_stack;
-    //EG(vm_stack_top) = context->current_vm_stack_top;
-    // EG(vm_stack_end) = context->current_vm_stack_end;
-    // //EX(prev_execute_data) = EG(current_execute_data);
-    // EX(prev_execute_data) = context->origin_execute_data;
-    
-
-
-
-    //zend_init_execute_data(context->execute_data,context->op_array,ret);
-    // zend_function *func = current_execute_data->func;
-    // zend_op_array *op_array = &func->op_array;
-    // EX(func) = (zend_function*)current_execute_data->func;
-    // EX(opline) = op_array->line_start;
-    // op_array->opcodes = op_array->line_start;
-    // EX(call) = NULL;
-    // EX(return_value) = ret;
-    // EX_LOAD_RUN_TIME_CACHE(op_array);
-    // EX_LOAD_LITERALS(op_array);
-    //EG(current_execute_data) = current_execute_data;
-    php_printf("php_coro_resume current_execute_data:%d\n",current_execute_data);
-    //EG(current_execute_data)->opline -= 2;
-
-    current_execute_data->prev_execute_data->opline += 2;
-    zend_execute_ex(EG(current_execute_data));
-
-    // EG(current_execute_data) = current_execute_data;
-    // EG(current_execute_data)->opline -= 2;
-    // zend_execute_ex(current_execute_data);
-
-    // EG(current_execute_data) = current_execute_data;
-    // EG(current_execute_data)->opline -= 2;
-    // zend_execute_ex(current_execute_data);
-
-    // EG(current_execute_data) = current_execute_data;
-    // EG(current_execute_data)->opline -= 2;
-    // zend_execute_ex(current_execute_data);
-
-
-    // php_printf("php_coro_resume zend_execute_ex:%d\n",zend_execute_ex);
-    
-    //zend_execute(context->op_array,ret);
-
-
-
-    //zend_op_array *op_array = (zend_op_array *)context->func_cache->function_handler;
-
-    // zend_init_execute_data(context->execute_data,context->op_array,ret);
-    // zend_execute_ex(context->execute_data); //执行opcode
-    //cp_zend_execute_resume(context->op_array,ret);
-
-    // context->origin_vm_stack = EG(vm_stack);
-    // context->origin_vm_stack_top = EG(vm_stack_top);
-    // context->origin_vm_stack_end = EG(vm_stack_end);
-    
-
-    // EG(vm_stack) = context->current_vm_stack;
-    // EG(vm_stack_top) = context->current_vm_stack_top;
-    // EG(vm_stack_end) = context->current_vm_stack_end;
-    // EX(prev_execute_data) = context->execute_data->prev_execute_data;
-        
-    //     EG(current_execute_data) = context->execute_data;
-
-
-    //     EG(current_execute_data)->opline++;
-    //     EG(current_execute_data)->return_value = ret;
-
-        
-
-    //     //分配zend_execute_data
-    //     // context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_CODE,
-    //     //         (zend_function*)context->op_array, 0, zend_get_called_scope(EG(current_execute_data)), zend_get_this_object(EG(current_execute_data)));
-    //     // if (EG(current_execute_data)) {
-    //          context->execute_data->symbol_table = zend_rebuild_symbol_table();
-    //     // } else {
-    //     //    context->execute_data->symbol_table = &EG(symbol_table);
-    //     // }
-
-    //     //EX(prev_execute_data) = EG(current_execute_data); //=> execute_data->prev_execute_data = EG(current_execute_data);
-
-    //     //i_init_execute_data(execute_data, op_array, ret); //初始化execute_data
-    //     //zend_init_execute_data(context->execute_data,context->op_array,ret);
-
-    //     zend_execute_ex(context->execute_data); //执行opcode
-    //     // zend_vm_stack_free_call_frame(context->execute_data); //释放execute_data:销毁所有的PHP变量
-    //     // //printf("xxxxxjdljalajdf\n");
-
-    //     // efree(EG(vm_stack));
-    //     // //恢复执行栈
-    //     // EG(vm_stack) = context->origin_vm_stack;
-    //     // EG(vm_stack_top) = context->origin_vm_stack_top;
-    //     // EG(vm_stack_end) = context->origin_vm_stack_end;
-    //     // EG(current_execute_data) = context->origin_execute_data;
-
-
-
-
-
-
-
-    // // ptr = context->buf_ptr;
-    // // //context->op_array->opcodes +=3;
-    // // // context->op_array->opcodes = context->op_idx;
-    // // // EX(opline) = context->op_array->opcodes;
-    // // php_printf("context->op_idx:%d,op_codes:%d\n",context->op_idx,context->op_array->opcodes);
-    // // //php_printf("php_coro_resume:%d\n",context);
-    // // cp_zend_execute(context->op_array,ret); 
-
-    // //php_printf("php_coro_resume done:%d\n",context->op_array);
-
-    // //longjmp(*ptr,2);//2 resume
-    // //RETURN_TRUE;
+    return;
+    //RETURN_TRUE;
 }
 
-PHP_FUNCTION(php_coro_free)
+PHP_FUNCTION(php_coro_run)
 {
-  jmp_buf *buf_ptr = NULL;
-  if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l", &buf_ptr,sizeof(intptr_t)) == FAILURE) 
-  {
-    RETURN_FALSE;
-  }
-  efree(buf_ptr);
+
+    coro_contorler_run();
+    
+    RETURN_TRUE;
 }
 
 
@@ -650,11 +355,10 @@ PHP_MINFO_FUNCTION(coroutine_php)
  * Every user visible function must have an entry in coroutine_php_functions[].
  */
 const zend_function_entry coroutine_php_functions[] = {
-	PHP_FE(coroutine_php_init,	NULL)		
-  PHP_FE(php_coro_create,  NULL)
-  PHP_FE(php_coro_init,  NULL)
-  PHP_FE(php_coro_yield,  NULL)
-  PHP_FE(php_coro_resume,  NULL)
+    PHP_FE(php_coro_run,	NULL)		
+    PHP_FE(php_coro_addfun,  NULL)
+    PHP_FE(php_coro_init,  NULL)
+    PHP_FE(php_coro_yield,  NULL)
 	PHP_FE_END	/* Must be the last line in coroutine_php_functions[] */
 };
 /* }}} */

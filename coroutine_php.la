@@ -32,4 +32,4 @@ dlopen=''
 dlpreopen=''
 
 # Directory that this library needs to be installed in:
-libdir='/Users/wangxiuming/work/php-7.1.15/ext/coroutine_php/modules'
+libdir='/Users/sioomy/Downloads/php-7.1.15/ext/coroutine_php/modules'

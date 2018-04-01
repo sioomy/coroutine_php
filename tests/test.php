@@ -1,50 +1,37 @@
 <?php
 //phpinfo();
-echo "xx1\n";
-echo "xx2\n";
-echo "xx3\n";
-echo "xx4\n";
-// coroutine_php_init();
-$i=0;
-$buf = php_coro_create();
-var_dump($buf);
-php_coro_init($buf,function(){
-    global $buf,$i;
+echo "test script begin\n";
+// function hello(){
+//     echo "this is function 1\n";
+//     php_coro_yield();
+//     echo "this is function 1,line 2\n";
 
-    $j = 0;
-    echo "ss\n";
-    echo "this is ok\n";
+// }
 
-    $j++;
-
-    echo "\$j:$j\n";
-
-    if($i==0){
-        php_coro_yield($buf);
-    }
-    
-    //var_dump($buf);
-    echo "\$j:$j\n";
-    echo "line 3\n";
-    echo "line 4\n";
-
-    //throw new Exception("Error Processing Request", 1);
-    
+php_coro_init();
+echo "test script addfunc1\n";
+php_coro_addfun(function(){
+    echo "this is function 1\n";
+    php_coro_yield();
+    echo "this is function 1,line 2\n";
 
 });
-echo "xxx\n";
-$i++;
-echo "\$i:$i\n";
-if($i==1){
-    echo "php_coro_resume-----\n";
 
+//php_coro_addfun("hello");
 
-    php_coro_resume($buf);
-
-
-    echo "ok\n";
-}
-
-//php_coro_free($buf);
-
+//echo "test script addfunc2\n";
+// php_coro_addfun(function (){
+//     echo "this is function 2\n";
+//     //php_coro_yield();
+//     echo "this is function 2,line 2\n";
+// });
+//echo "test script addfunc3\n";
+// php_coro_addfun(function (){
+//     echo "this is function 3\n";
+//     //php_coro_yield();
+//     echo "this is function 3,line 2\n";
+// });
+echo "test script run\n";
+php_coro_run();
+echo "test script done\n";
 ?>

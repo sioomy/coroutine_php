@@ -1,7 +1,7 @@
-srcdir = /Users/wangxiuming/work/php-7.1.15/ext/coroutine_php
-builddir = /Users/wangxiuming/work/php-7.1.15/ext/coroutine_php
-top_srcdir = /Users/wangxiuming/work/php-7.1.15/ext/coroutine_php
-top_builddir = /Users/wangxiuming/work/php-7.1.15/ext/coroutine_php
+srcdir = /Users/sioomy/Downloads/php-7.1.15/ext/coroutine_php
+builddir = /Users/sioomy/Downloads/php-7.1.15/ext/coroutine_php
+top_srcdir = /Users/sioomy/Downloads/php-7.1.15/ext/coroutine_php
+top_builddir = /Users/sioomy/Downloads/php-7.1.15/ext/coroutine_php
 EGREP = /usr/bin/grep -E
 SED = /usr/bin/sed
 CONFIGURE_COMMAND = './configure' '--enable-coroutine_php'
@@ -17,12 +17,12 @@ PHP_MODULES = $(phplibdir)/coroutine_php.la
 PHP_ZEND_EX =
 all_targets = $(PHP_MODULES) $(PHP_ZEND_EX)
 install_targets = install-modules install-headers
-prefix = /usr/local/Cellar/php71/7.1.14_25
+prefix = /usr/local/Cellar/php71/7.1.13_24
 exec_prefix = $(prefix)
 libdir = ${exec_prefix}/lib
-prefix = /usr/local/Cellar/php71/7.1.14_25
-phplibdir = /Users/wangxiuming/work/php-7.1.15/ext/coroutine_php/modules
-phpincludedir = /usr/local/Cellar/php71/7.1.14_25/include/php
+prefix = /usr/local/Cellar/php71/7.1.13_24
+phplibdir = /Users/sioomy/Downloads/php-7.1.15/ext/coroutine_php/modules
+phpincludedir = /usr/local/Cellar/php71/7.1.13_24/include/php
 CC = cc
 CFLAGS = -g -O2
 CFLAGS_CLEAN = $(CFLAGS)
@@ -31,11 +31,11 @@ CPPFLAGS = -DHAVE_CONFIG_H
 CXX =
 CXXFLAGS =
 CXXFLAGS_CLEAN = $(CXXFLAGS)
-EXTENSION_DIR = /usr/local/Cellar/php71/7.1.14_25/lib/php/extensions/no-debug-non-zts-20160303
-PHP_EXECUTABLE = /usr/local/Cellar/php71/7.1.14_25/bin/php
+EXTENSION_DIR = /usr/local/Cellar/php71/7.1.13_24/lib/php/extensions/no-debug-non-zts-20160303
+PHP_EXECUTABLE = /usr/local/Cellar/php71/7.1.13_24/bin/php
 EXTRA_LDFLAGS =
 EXTRA_LIBS =
-INCLUDES = -I/usr/local/Cellar/php71/7.1.14_25/include/php -I/usr/local/Cellar/php71/7.1.14_25/include/php/main -I/usr/local/Cellar/php71/7.1.14_25/include/php/TSRM -I/usr/local/Cellar/php71/7.1.14_25/include/php/Zend -I/usr/local/Cellar/php71/7.1.14_25/include/php/ext -I/usr/local/Cellar/php71/7.1.14_25/include/php/ext/date/lib
+INCLUDES = -I/usr/local/Cellar/php71/7.1.13_24/include/php -I/usr/local/Cellar/php71/7.1.13_24/include/php/main -I/usr/local/Cellar/php71/7.1.13_24/include/php/TSRM -I/usr/local/Cellar/php71/7.1.13_24/include/php/Zend -I/usr/local/Cellar/php71/7.1.13_24/include/php/ext -I/usr/local/Cellar/php71/7.1.13_24/include/php/ext/date/lib
 LFLAGS =
 LDFLAGS =
 SHARED_LIBTOOL =
@@ -189,8 +189,8 @@ prof-use:
 
 .PHONY: all clean install distclean test prof-gen prof-clean prof-use
 .NOEXPORT:
-coroutine_php.lo: /Users/wangxiuming/work/php-7.1.15/ext/coroutine_php/coroutine_php.c
-	$(LIBTOOL) --mode=compile $(CC) -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 -I. -I/Users/wangxiuming/work/php-7.1.15/ext/coroutine_php $(COMMON_FLAGS) $(CFLAGS_CLEAN) $(EXTRA_CFLAGS)  -c /Users/wangxiuming/work/php-7.1.15/ext/coroutine_php/coroutine_php.c -o coroutine_php.lo 
+coroutine_php.lo: /Users/sioomy/Downloads/php-7.1.15/ext/coroutine_php/coroutine_php.c
+	$(LIBTOOL) --mode=compile $(CC) -DZEND_ENABLE_STATIC_TSRMLS_CACHE=1 -I. -I/Users/sioomy/Downloads/php-7.1.15/ext/coroutine_php $(COMMON_FLAGS) $(CFLAGS_CLEAN) $(EXTRA_CFLAGS)  -c /Users/sioomy/Downloads/php-7.1.15/ext/coroutine_php/coroutine_php.c -o coroutine_php.lo 
 $(phplibdir)/coroutine_php.la: ./coroutine_php.la
 	$(LIBTOOL) --mode=install cp ./coroutine_php.la $(phplibdir)
 
