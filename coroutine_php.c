@@ -42,6 +42,7 @@ ZEND_DECLARE_MODULE_GLOBALS(coroutine_php)
 #define CORO_YIELD 1
 #define CORO_END 2
 #define CORO_RESUME 3
+#define CORO_START 4
 
 
 static int le_coroutine_php;
@@ -58,7 +59,6 @@ struct _php_coroutine_context
   zend_vm_stack current_vm_stack;
   intptr_t current_vm_stack_top;
   intptr_t current_vm_stack_end;
-  int jumidx;
 }Php_coroutine_context;
 
 static int cp_zend_is_callable_ex(zval *cb, zval *object , uint a, char **cb_name,zend_fcall_info_cache *cbcache,char **error TSRMLS_DC)
@@ -80,10 +80,11 @@ static int coroutine_context_count;
 static jmp_buf *coro_contorler_ptr;
 
 static void free_coroutine_context(php_coroutine_context* context){
+    php_printf("free context:%d\n",context);
+    current_coroutine_context = context->next;
     if(coroutine_context_count>0){
         coroutine_context_count--;
 
-        php_printf("free_coroutine_context: %d\n",context);
         //unlink
         context->prev->next = context->next;
         context->next->prev = context->prev;
@@ -99,56 +100,6 @@ static void free_coroutine_context(php_coroutine_context* context){
     }
 }
 
-static void coro_contorler_run(){
-    php_printf("loop begin:\n");
-    // setjmp(*coro_contorler_ptr);
-    // if(setjmp(*coro_contorler_ptr) == CORO_YIELD){
-    //     current_coroutine_context = current_coroutine_context->next;//swich to next corotine
-    // }
-
-    switch(current_coroutine_context->coro_state){
-        case CORO_YIELD://if type is yield then continue
-            php_printf("coro yield:%d\n",current_coroutine_context);
-            current_coroutine_context->coro_state = CORO_RESUME;
-            current_coroutine_context = current_coroutine_context->next;//swich to next corotine
-            coro_contorler_run();
-            break;
-        case CORO_RESUME://
-            php_printf("coro resume:%d\n",current_coroutine_context);
-            longjmp(*current_coroutine_context->buf_ptr,CORO_RESUME);
-            break;
-        case CORO_DEFAULT:
-            //php_printf("coro next%d\n",current_coroutine_context);
-            EG(current_execute_data) = current_coroutine_context->execute_data;
-            //zend_execute_ex(EG(current_execute_data));
-            break;
-        case CORO_END://will not be run
-            php_printf("coro end%d\n",current_coroutine_context);
-            zend_execute_ex(EG(current_execute_data));
-            free_coroutine_context(current_coroutine_context->prev);
-            break;
-
-    }
-
-
-    
-    //php_printf("current_coroutine_context->execute_data:%d\n", current_coroutine_context->execute_data);
-    zend_execute_ex(EG(current_execute_data));
-    php_printf("current_coroutine_context->prev:%d\n", current_coroutine_context->prev);
-    current_coroutine_context->coro_state = CORO_END;
-    current_coroutine_context = current_coroutine_context->next;
-    php_printf("free_coroutine_context1: %d\n",current_coroutine_context->prev);
-    free_coroutine_context(current_coroutine_context->prev);
-    //todo free current_coroutine_context
-    //php_printf("free_coroutine_context2: %d\n",current_coroutine_context->prev);
-    php_printf("loop end:\n");
-    //coroutine_context_count--;
-    if(coroutine_context_count>0){
-
-        coro_contorler_run();
-    }
-
-}
 
 
 PHP_FUNCTION(php_coro_init)
@@ -171,7 +122,6 @@ PHP_FUNCTION(php_coro_addfun)
     context = emalloc(sizeof(php_coroutine_context));
     context->coro_state = CORO_DEFAULT;
     context->func_cache = emalloc(sizeof(zend_fcall_info_cache));
-    context->jumidx = 0; 
     //php_printf("php_coro_addfun  context:%d,buf_ptr:%d,\n",context,context->buf_ptr);
 
     if(!cp_zend_is_callable_ex(callback, NULL, 0, &cb_name,context->func_cache,NULL TSRMLS_CC)){
@@ -212,6 +162,8 @@ PHP_FUNCTION(php_coro_addfun)
 
     zend_init_execute_data(context->execute_data,op_array,NULL);
 
+    context->buf_ptr = emalloc(sizeof(jmp_buf));
+
     if(!current_coroutine_context){
         current_coroutine_context = context;
     }
@@ -233,40 +185,74 @@ PHP_FUNCTION(php_coro_addfun)
     RETURN_TRUE;
 }
 
+
+
+
+
+static void coro_controler_run(){
+    php_printf("loop begin:\n");
+    int j = setjmp(*coro_contorler_ptr);//初始值
+    php_printf("loop jump j:%d\n",j);
+
+    int i = setjmp(*current_coroutine_context->buf_ptr);
+
+    php_printf("context jump i:%d\n",i);
+    switch (i){
+        case CORO_DEFAULT:
+            php_printf("CORO_DEFAULT   current_coroutine_context:%d\n",current_coroutine_context);
+            EG(current_execute_data) = current_coroutine_context->execute_data;
+            zend_execute_ex(EG(current_execute_data));
+            break;
+        case CORO_YIELD:
+            php_printf("CORO_YIELD   current_coroutine_context:%d\n",current_coroutine_context);
+            current_coroutine_context = current_coroutine_context->next;
+            //判断下一个的状态
+            if(current_coroutine_context->coro_state == CORO_DEFAULT){
+                longjmp(*coro_contorler_ptr,CORO_DEFAULT); 
+            }else if(current_coroutine_context->coro_state == CORO_YIELD){
+                longjmp(*current_coroutine_context->buf_ptr,CORO_RESUME); 
+            }
+            break;
+        case CORO_RESUME:
+            php_printf("CORO_RESUME   current_coroutine_context:%d\n",current_coroutine_context);
+            EG(current_execute_data) = current_coroutine_context->execute_data;
+            EG(current_execute_data)->opline++;
+            zend_execute_ex(EG(current_execute_data));
+            php_printf("resume ok:%d\n",current_coroutine_context);
+            break;
+    }
+        
+
+    //结束
+    php_printf("loop done   current_coroutine_context:%d\n",current_coroutine_context);
+    //current_coroutine_context = current_coroutine_context->next;
+    free_coroutine_context(current_coroutine_context);
+
+    if(coroutine_context_count>0){
+        
+        longjmp(*coro_contorler_ptr,1); 
+    }
+
+    php_printf("loop end:\n");
+
+}
+
 PHP_FUNCTION(php_coro_yield)
 {
     php_printf("=========php_coro_yield run======\n");
-    current_coroutine_context->buf_ptr = emalloc(sizeof(jmp_buf));
-    int r = setjmp(*current_coroutine_context->buf_ptr);
-    php_printf("r:%d\n",r);
-    if(!r){
-        php_printf("php_coro_yield  current_coroutine_context:%d,buf_ptr:%d,\n",current_coroutine_context,current_coroutine_context->buf_ptr);
-        current_coroutine_context->coro_state = CORO_YIELD;
-        //longjmp(*coro_contorler_ptr,CORO_YIELD);
-        coro_contorler_run();
-    }else{
-        current_coroutine_context->jumidx++;
-        //setjmp(*current_coroutine_context->buf_ptr);
-        //efree(current_coroutine_context->buf_ptr);
-        EG(vm_stack) = current_coroutine_context->current_vm_stack;
-        EG(vm_stack_top) = current_coroutine_context->current_vm_stack_top;
-        EG(vm_stack_end) = current_coroutine_context->current_vm_stack_end;
-        // EG(current_execute_data)->opline++;
-        php_printf("php_coro_yield  current_coroutine_context:%d,buf_ptr:%d,\n",current_coroutine_context,current_coroutine_context->buf_ptr);
-        php_printf("=========have resume======\n");
-        
-
-        //longjmp(*coro_contorler_ptr,CORO_YIELD);
-        
-    }
-    RETURN_TRUE;
+    
+    current_coroutine_context->coro_state = CORO_YIELD;
+    EG(vm_stack) = current_coroutine_context->current_vm_stack;
+    EG(vm_stack_top) = current_coroutine_context->current_vm_stack_top;
+    EG(vm_stack_end) = current_coroutine_context->current_vm_stack_end;
+    longjmp(*current_coroutine_context->buf_ptr,CORO_YIELD);
 }
 
 PHP_FUNCTION(php_coro_run)
 {
 
-    coro_contorler_run();
-    
+    coro_controler_run();
+
     RETURN_TRUE;
 }
 
