@@ -57,6 +57,7 @@ typedef struct _php_coroutine_context{
   zend_vm_stack current_vm_stack;
   intptr_t current_vm_stack_top;
   intptr_t current_vm_stack_end;
+  zval *ret;
 }php_coroutine_context;
 
 static int cp_zend_is_callable_ex(zval *cb, zval *object , uint a, char **cb_name,zend_fcall_info_cache *cbcache,char **error TSRMLS_DC)
@@ -101,11 +102,10 @@ PHP_FUNCTION(php_coro_init)
     RETURN_TRUE;
 }
 
-PHP_FUNCTION(php_coro_addfun)
+PHP_FUNCTION(php_coro_create)
 {
     zval *callback = NULL;
     php_coroutine_context *context = NULL;
-    zval *ret;
     char *cb_name = NULL;
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z",&callback) == FAILURE) 
     {
@@ -128,7 +128,7 @@ PHP_FUNCTION(php_coro_addfun)
     context->current_vm_stack_top = (intptr_t)EG(vm_stack_top);
     context->current_vm_stack_end = (intptr_t)EG(vm_stack_end);
 
-    // //分配zend_execute_data
+    // assign zend_execute_data
     context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_CODE,
             (zend_function*)op_array, 0, zend_get_called_scope(EG(current_execute_data)), zend_get_this_object(EG(current_execute_data)));
     
@@ -158,7 +158,7 @@ PHP_FUNCTION(php_coro_addfun)
         context->next->prev = context; 
     }
     coroutine_context_count++;
-    RETURN_TRUE;
+    RETURN_LONG((intptr_t)context);
 }
 
 
@@ -170,7 +170,7 @@ static void coro_controler_run(){
             break;
         case CORO_YIELD:
             current_coroutine_context = current_coroutine_context->next;
-            //判断下一个的状态
+            //state of next coroutine
             if(current_coroutine_context->coro_state == CORO_DEFAULT){
                 goto loopstart;
             }else if(current_coroutine_context->coro_state == CORO_YIELD){
@@ -191,7 +191,7 @@ static void coro_controler_run(){
     }
     zend_execute_ex(EG(current_execute_data));
 
-    //结束
+    //end
     free_coroutine_context(current_coroutine_context);
     if(coroutine_context_count>0){ 
         if(current_coroutine_context->coro_state == CORO_DEFAULT){
@@ -214,11 +214,45 @@ PHP_FUNCTION(php_coro_yield)
     longjmp(*current_coroutine_context->buf_ptr,CORO_YIELD);
 }
 
-PHP_FUNCTION(php_coro_run)
+PHP_FUNCTION(php_coro_loop)
 {
-
     coro_controler_run();
+    RETURN_TRUE;
+}
 
+PHP_FUNCTION(php_coro_state)
+{
+    php_coroutine_context *context = NULL;
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l",&context,sizeof(intptr_t)) == FAILURE) 
+    {
+      RETURN_FALSE;
+    }
+    RETURN_LONG(context->coro_state);
+}
+
+PHP_FUNCTION(php_coro_next)
+{
+    RETURN_TRUE;
+}
+
+PHP_FUNCTION(php_coro_getval)
+{
+    php_coroutine_context *context = NULL;
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l",&context,sizeof(intptr_t)) == FAILURE) 
+    {
+      RETURN_FALSE;
+    }
+    RETURN_LONG(context->coro_state);
+}
+
+PHP_FUNCTION(php_coro_free)
+{
+    php_coroutine_context *context = NULL;
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l",&context,sizeof(intptr_t)) == FAILURE) 
+    {
+      RETURN_FALSE;
+    }
+    free_coroutine_context(context);
     RETURN_TRUE;
 }
 
@@ -305,10 +339,14 @@ PHP_MINFO_FUNCTION(coroutine_php)
  * Every user visible function must have an entry in coroutine_php_functions[].
  */
 const zend_function_entry coroutine_php_functions[] = {
-    PHP_FE(php_coro_run,	NULL)		
-    PHP_FE(php_coro_addfun,  NULL)
+    PHP_FE(php_coro_loop,	NULL)
+    PHP_FE(php_coro_state,    NULL)
+    PHP_FE(php_coro_next,    NULL)
+    PHP_FE(php_coro_getval,    NULL)
+    PHP_FE(php_coro_create,  NULL)
     PHP_FE(php_coro_init,  NULL)
     PHP_FE(php_coro_yield,  NULL)
+    PHP_FE(php_coro_free,  NULL)
 	PHP_FE_END	/* Must be the last line in coroutine_php_functions[] */
 };
 /* }}} */
