@@ -77,7 +77,6 @@ static int cp_zend_is_callable_ex(zval *cb, zval *object , uint a, char **cb_nam
 
 static php_coroutine_context* current_coroutine_context;
 static int coroutine_context_count;
-static jmp_buf *coro_contorler_ptr;
 
 static void free_coroutine_context(php_coroutine_context* context){
     php_printf("free context:%d\n",context);
@@ -105,7 +104,6 @@ static void free_coroutine_context(php_coroutine_context* context){
 PHP_FUNCTION(php_coro_init)
 {
     coroutine_context_count = 0;
-    coro_contorler_ptr = emalloc(sizeof(jmp_buf));
     RETURN_TRUE;
 }
 
@@ -178,7 +176,7 @@ PHP_FUNCTION(php_coro_addfun)
         context->next = current_coroutine_context;
         context->next->prev = context; 
     }
-    php_printf("context->execute_data:%d\n", context->execute_data);
+    php_printf("context:%d\n", context);
     //php_printf("context->prev:%d\n", context->prev);
     //php_printf("context:%d\n", context);
     coroutine_context_count++;
@@ -186,51 +184,50 @@ PHP_FUNCTION(php_coro_addfun)
 }
 
 
-
-
-
 static void coro_controler_run(){
     php_printf("loop begin:\n");
-    int j = setjmp(*coro_contorler_ptr);//初始值
-    php_printf("loop jump j:%d\n",j);
-
-    int i = setjmp(*current_coroutine_context->buf_ptr);
-
-    php_printf("context jump i:%d\n",i);
-    switch (i){
+    loopstart:
+    switch (setjmp(*current_coroutine_context->buf_ptr)){
         case CORO_DEFAULT:
             php_printf("CORO_DEFAULT   current_coroutine_context:%d\n",current_coroutine_context);
             EG(current_execute_data) = current_coroutine_context->execute_data;
-            zend_execute_ex(EG(current_execute_data));
             break;
         case CORO_YIELD:
             php_printf("CORO_YIELD   current_coroutine_context:%d\n",current_coroutine_context);
             current_coroutine_context = current_coroutine_context->next;
             //判断下一个的状态
             if(current_coroutine_context->coro_state == CORO_DEFAULT){
-                longjmp(*coro_contorler_ptr,CORO_DEFAULT); 
+                goto loopstart;
             }else if(current_coroutine_context->coro_state == CORO_YIELD){
                 longjmp(*current_coroutine_context->buf_ptr,CORO_RESUME); 
             }
             break;
         case CORO_RESUME:
             php_printf("CORO_RESUME   current_coroutine_context:%d\n",current_coroutine_context);
+
             EG(current_execute_data) = current_coroutine_context->execute_data;
+            EG(vm_stack) = current_coroutine_context->current_vm_stack;
+            EG(vm_stack_top) = current_coroutine_context->current_vm_stack_top;
+            EG(vm_stack_end) = current_coroutine_context->current_vm_stack_end;
             EG(current_execute_data)->opline++;
-            zend_execute_ex(EG(current_execute_data));
-            php_printf("resume ok:%d\n",current_coroutine_context);
+            
+            break;
+        default:
             break;
     }
-        
+    zend_execute_ex(EG(current_execute_data));
 
     //结束
     php_printf("loop done   current_coroutine_context:%d\n",current_coroutine_context);
-    //current_coroutine_context = current_coroutine_context->next;
     free_coroutine_context(current_coroutine_context);
-
-    if(coroutine_context_count>0){
-        
-        longjmp(*coro_contorler_ptr,1); 
+    php_printf("loop done   current_coroutine_context:%d\n",current_coroutine_context);
+    if(coroutine_context_count>0){ 
+        //goto loopstart;
+        if(current_coroutine_context->coro_state == CORO_DEFAULT){
+            goto loopstart;
+        }else if(current_coroutine_context->coro_state == CORO_YIELD){
+            longjmp(*current_coroutine_context->buf_ptr,CORO_RESUME); 
+        }
     }
 
     php_printf("loop end:\n");
@@ -239,12 +236,11 @@ static void coro_controler_run(){
 
 PHP_FUNCTION(php_coro_yield)
 {
-    php_printf("=========php_coro_yield run======\n");
-    
+    php_printf("php_coro_yield run\n");
     current_coroutine_context->coro_state = CORO_YIELD;
-    EG(vm_stack) = current_coroutine_context->current_vm_stack;
-    EG(vm_stack_top) = current_coroutine_context->current_vm_stack_top;
-    EG(vm_stack_end) = current_coroutine_context->current_vm_stack_end;
+    current_coroutine_context->current_vm_stack = EG(vm_stack);
+    current_coroutine_context->current_vm_stack_top = EG(vm_stack_top);
+    current_coroutine_context->current_vm_stack_end = EG(vm_stack_end);
     longjmp(*current_coroutine_context->buf_ptr,CORO_YIELD);
 }
 
