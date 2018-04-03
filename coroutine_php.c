@@ -89,6 +89,7 @@ static void free_coroutine_context(php_coroutine_context* context){
         efree(context->buf_ptr);
         context->buf_ptr = NULL;
         zend_vm_stack_free_call_frame(context->execute_data); //释放execute_data:销毁所有的PHP变量
+        context->execute_data==NULL;
         efree(context);
         context = NULL;
     }
@@ -115,6 +116,7 @@ PHP_FUNCTION(php_coro_create)
     context->coro_state = CORO_DEFAULT;
     zend_fcall_info_cache* func_cache = emalloc(sizeof(zend_fcall_info_cache));
 
+
     if(!cp_zend_is_callable_ex(callback, NULL, 0, &cb_name,func_cache,NULL TSRMLS_CC)){
       RETURN_FALSE;
     }
@@ -139,7 +141,7 @@ PHP_FUNCTION(php_coro_create)
         context->execute_data->symbol_table = &EG(symbol_table);
     }
 
-    zend_init_execute_data(context->execute_data,op_array,NULL);
+    zend_init_execute_data(context->execute_data,op_array,context->ret);
 
     context->buf_ptr = emalloc(sizeof(jmp_buf));
 
@@ -232,7 +234,40 @@ PHP_FUNCTION(php_coro_state)
 
 PHP_FUNCTION(php_coro_next)
 {
-    RETURN_TRUE;
+    php_coroutine_context *context = NULL;
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l",&context,sizeof(intptr_t)) == FAILURE) 
+    {
+      RETURN_FALSE;
+    }
+    current_coroutine_context = context;
+    if(current_coroutine_context->coro_state == CORO_DEFAULT){
+
+        if(setjmp(*current_coroutine_context->buf_ptr) == CORO_DEFAULT){//first run
+            EG(current_execute_data) = current_coroutine_context->execute_data;
+            zend_execute_ex(EG(current_execute_data));
+        }else{//yield checkout
+            RETURN_TRUE;
+        }
+
+
+    }else if(current_coroutine_context->coro_state == CORO_YIELD){//resume
+        if(setjmp(*current_coroutine_context->buf_ptr) == CORO_DEFAULT){//first run
+
+            EG(vm_stack) = current_coroutine_context->current_vm_stack;
+            EG(vm_stack_top) = (zval *)current_coroutine_context->current_vm_stack_top;
+            EG(vm_stack_end) = (zval *)current_coroutine_context->current_vm_stack_end;
+            EG(current_execute_data) = current_coroutine_context->prev_execute_data;
+            EG(current_execute_data)->opline++;
+            zend_execute_ex(EG(current_execute_data));
+
+        }else{//yield checkout
+            RETURN_TRUE;
+        }
+
+    }
+
+    //finish
+    RETURN_FALSE;
 }
 
 PHP_FUNCTION(php_coro_getval)
@@ -242,7 +277,7 @@ PHP_FUNCTION(php_coro_getval)
     {
       RETURN_FALSE;
     }
-    RETURN_LONG(context->coro_state);
+    RETURN_ZVAL(&context->ret,1,0);
 }
 
 PHP_FUNCTION(php_coro_free)
@@ -253,6 +288,8 @@ PHP_FUNCTION(php_coro_free)
       RETURN_FALSE;
     }
     free_coroutine_context(context);
+
+    php_printf("free:%d\n",context->execute_data);
     RETURN_TRUE;
 }
 
