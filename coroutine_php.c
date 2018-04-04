@@ -57,6 +57,7 @@ typedef struct _php_coroutine_context{
   zend_vm_stack current_vm_stack;
   intptr_t current_vm_stack_top;
   intptr_t current_vm_stack_end;
+  zend_fcall_info_cache* func_cache;
   zval *ret;
 }php_coroutine_context;
 
@@ -75,7 +76,7 @@ static int cp_zend_is_callable_ex(zval *cb, zval *object , uint a, char **cb_nam
 /* use to stor coroutine context */
 
 static php_coroutine_context* current_coroutine_context;
-static int coroutine_context_count;
+static int coroutine_context_count = 0;
 
 static void free_coroutine_context(php_coroutine_context* context){
     current_coroutine_context = context->next;
@@ -89,51 +90,61 @@ static void free_coroutine_context(php_coroutine_context* context){
         efree(context->buf_ptr);
         context->buf_ptr = NULL;
         zend_vm_stack_free_call_frame(context->execute_data); //释放execute_data:销毁所有的PHP变量
-        context->execute_data==NULL;
+        context->execute_data = NULL;
+        efree(context->func_cache);
+        context->func_cache = NULL;
         efree(context);
         context = NULL;
+        if(coroutine_context_count == 0){
+            current_coroutine_context = NULL;
+        }
     }
 }
 
 
-
-PHP_FUNCTION(php_coro_init)
-{
-    coroutine_context_count = 0;
-    RETURN_TRUE;
-}
-
 PHP_FUNCTION(php_coro_create)
 {
     zval *callback = NULL;
+    zval *params = NULL;
     php_coroutine_context *context = NULL;
     char *cb_name = NULL;
-    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z",&callback) == FAILURE) 
+    zend_object *object;
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z|z",&callback,&params) == FAILURE) 
     {
       RETURN_FALSE;
     }
     context = emalloc(sizeof(php_coroutine_context));
     context->coro_state = CORO_DEFAULT;
-    zend_fcall_info_cache* func_cache = emalloc(sizeof(zend_fcall_info_cache));
+    context->func_cache = emalloc(sizeof(zend_fcall_info_cache));
 
 
-    if(!cp_zend_is_callable_ex(callback, NULL, 0, &cb_name,func_cache,NULL TSRMLS_CC)){
+    if(!cp_zend_is_callable_ex(callback, NULL, 0, &cb_name,context->func_cache,NULL TSRMLS_CC)){
       RETURN_FALSE;
     }
 
-    zend_op_array* op_array = (zend_op_array *)func_cache->function_handler;
-    efree(func_cache);
+    zend_op_array* op_array = (zend_op_array *)context->func_cache->function_handler;
 
     zend_vm_stack_init();
 
     context->current_vm_stack = EG(vm_stack);
     context->current_vm_stack_top = (intptr_t)EG(vm_stack_top);
     context->current_vm_stack_end = (intptr_t)EG(vm_stack_end);
+    object = (((zend_function*)op_array)->common.fn_flags & ZEND_ACC_STATIC) ? NULL : context->func_cache->object;
 
-    // assign zend_execute_data
-    context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_CODE,
-            (zend_function*)op_array, 0, zend_get_called_scope(EG(current_execute_data)), zend_get_this_object(EG(current_execute_data)));
+    if(params){
+        // assign zend_execute_data
+        context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_FUNCTION,
+                (zend_function*)op_array, 1, context->func_cache->called_scope, object);
+        
+        //put params
+        zval *target = ZEND_CALL_ARG(context->execute_data, 1);
+        ZVAL_COPY(target, params);
+    }else{
+        context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_FUNCTION,
+                (zend_function*)op_array, 0, context->func_cache->called_scope, object);
+    }
     
+
 
     if (EG(current_execute_data)) {
         context->execute_data->symbol_table = zend_rebuild_symbol_table();
@@ -148,6 +159,7 @@ PHP_FUNCTION(php_coro_create)
     if(!current_coroutine_context){
         current_coroutine_context = context;
     }
+
 
     //link linktable
     if(coroutine_context_count == 0){
@@ -216,10 +228,15 @@ PHP_FUNCTION(php_coro_yield)
     longjmp(*current_coroutine_context->buf_ptr,CORO_YIELD);
 }
 
-PHP_FUNCTION(php_coro_loop)
+PHP_FUNCTION(php_coro_walk)
 {
     coro_controler_run();
     RETURN_TRUE;
+}
+
+PHP_FUNCTION(php_coro_current)
+{
+    RETURN_LONG((intptr_t)current_coroutine_context);
 }
 
 PHP_FUNCTION(php_coro_state)
@@ -289,7 +306,6 @@ PHP_FUNCTION(php_coro_free)
     }
     free_coroutine_context(context);
 
-    php_printf("free:%d\n",context->execute_data);
     RETURN_TRUE;
 }
 
@@ -376,12 +392,12 @@ PHP_MINFO_FUNCTION(coroutine_php)
  * Every user visible function must have an entry in coroutine_php_functions[].
  */
 const zend_function_entry coroutine_php_functions[] = {
-    PHP_FE(php_coro_loop,	NULL)
+    PHP_FE(php_coro_walk,	NULL)
     PHP_FE(php_coro_state,    NULL)
     PHP_FE(php_coro_next,    NULL)
+    PHP_FE(php_coro_current,    NULL)
     PHP_FE(php_coro_getval,    NULL)
     PHP_FE(php_coro_create,  NULL)
-    PHP_FE(php_coro_init,  NULL)
     PHP_FE(php_coro_yield,  NULL)
     PHP_FE(php_coro_free,  NULL)
 	PHP_FE_END	/* Must be the last line in coroutine_php_functions[] */
