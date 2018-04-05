@@ -133,14 +133,14 @@ PHP_FUNCTION(php_coro_create)
 
     if(params){
         // assign zend_execute_data
-        context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_FUNCTION,
+        context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_CODE,
                 (zend_function*)op_array, 1, context->func_cache->called_scope, object);
         
         //put params
         zval *target = ZEND_CALL_ARG(context->execute_data, 1);
         ZVAL_COPY(target, params);
     }else{
-        context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_FUNCTION,
+        context->execute_data = zend_vm_stack_push_call_frame(ZEND_CALL_TOP_CODE,
                 (zend_function*)op_array, 0, context->func_cache->called_scope, object);
     }
     
