@@ -56,7 +56,7 @@ free coroutine
     php_coro_free([cid])
 
 # demo1:
-
+```PHP
     function test(){
         echo "test start~======\n";
         php_coro_yield();
@@ -88,9 +88,9 @@ free coroutine
     var_dump(php_coro_next($cx2));
     var_dump(php_coro_next($cx2));
     var_dump(php_coro_next($cx1));
-
+```
 # demo2:
-
+```PHP
     $a = array("hh","params");
     $cx = php_coro_create(function ($a){
     var_dump($a);
@@ -140,4 +140,4 @@ free coroutine
         echo "===this is function 5,line 7\n";
     });
     php_coro_walk();
-
+```
