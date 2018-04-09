@@ -48,18 +48,24 @@ ZEND_DECLARE_MODULE_GLOBALS(coroutine_php)
 static int le_coroutine_php;
 
 typedef struct _php_coroutine_context{
-  jmp_buf *buf_ptr;
-  zend_execute_data *execute_data;
-  zend_execute_data *prev_execute_data;//execute for execute before yield
-  struct _php_coroutine_context *next;
-  struct _php_coroutine_context *prev;
-  int coro_state;
-  zend_vm_stack current_vm_stack;
-  intptr_t current_vm_stack_top;
-  intptr_t current_vm_stack_end;
-  zend_fcall_info_cache* func_cache;
-  zval *ret;
+    jmp_buf *buf_ptr;
+    zend_execute_data *execute_data;
+    zend_execute_data *prev_execute_data;//execute for execute before yield
+    struct _php_coroutine_context *next;
+    struct _php_coroutine_context *prev;
+    int coro_state;
+    zend_vm_stack current_vm_stack;
+    zval* current_vm_stack_top;
+    zval* current_vm_stack_end;
+    zend_fcall_info_cache* func_cache;
+    zval *ret;
 }php_coroutine_context;
+
+static struct _g_coro_stack{
+    zend_vm_stack vm_stack;
+    zval* vm_stack_top;
+    zval* vm_stack_end;
+}g_coro_stack;
 
 static int cp_zend_is_callable_ex(zval *cb, zval *object , uint a, char **cb_name,zend_fcall_info_cache *cbcache,char **error TSRMLS_DC)
 {
@@ -75,7 +81,7 @@ static int cp_zend_is_callable_ex(zval *cb, zval *object , uint a, char **cb_nam
 
 /* use to stor coroutine context */
 
-static php_coroutine_context* current_coroutine_context;
+static php_coroutine_context* current_coroutine_context = NULL;
 static int coroutine_context_count = 0;
 
 static void free_coroutine_context(php_coroutine_context* context){
@@ -113,6 +119,11 @@ PHP_FUNCTION(php_coro_create)
     {
       RETURN_FALSE;
     }
+    g_coro_stack.vm_stack = EG(vm_stack);
+    g_coro_stack.vm_stack_top = EG(vm_stack_top);
+    g_coro_stack.vm_stack_end = EG(vm_stack_end);
+    
+
     context = emalloc(sizeof(php_coroutine_context));
     context->coro_state = CORO_DEFAULT;
     context->func_cache = emalloc(sizeof(zend_fcall_info_cache));
@@ -126,9 +137,8 @@ PHP_FUNCTION(php_coro_create)
 
     zend_vm_stack_init();
 
-    context->current_vm_stack = EG(vm_stack);
-    context->current_vm_stack_top = (intptr_t)EG(vm_stack_top);
-    context->current_vm_stack_end = (intptr_t)EG(vm_stack_end);
+    
+
     object = (((zend_function*)op_array)->common.fn_flags & ZEND_ACC_STATIC) ? NULL : context->func_cache->object;
 
     if(params){
@@ -172,14 +182,30 @@ PHP_FUNCTION(php_coro_create)
         context->next->prev = context; 
     }
     coroutine_context_count++;
+
+    context->current_vm_stack = EG(vm_stack);
+    context->current_vm_stack_top = EG(vm_stack_top);
+    context->current_vm_stack_end = EG(vm_stack_end);
+
+    EG(vm_stack) = g_coro_stack.vm_stack;
+    EG(vm_stack_top) = g_coro_stack.vm_stack_top;
+    EG(vm_stack_end) = g_coro_stack.vm_stack_end;
+
     RETURN_LONG((intptr_t)context);
 }
 
 
 static void coro_controler_run(){
     loopstart:
+    
     switch (setjmp(*current_coroutine_context->buf_ptr)){
         case CORO_DEFAULT:
+            g_coro_stack.vm_stack = EG(vm_stack);
+            g_coro_stack.vm_stack_top = EG(vm_stack_top);
+            g_coro_stack.vm_stack_end = EG(vm_stack_end);
+            EG(vm_stack) = current_coroutine_context->current_vm_stack;
+            EG(vm_stack_top) = current_coroutine_context->current_vm_stack_top;
+            EG(vm_stack_end) = current_coroutine_context->current_vm_stack_end;
             EG(current_execute_data) = current_coroutine_context->execute_data;
             break;
         case CORO_YIELD:
@@ -192,10 +218,12 @@ static void coro_controler_run(){
             }
             break;
         case CORO_RESUME:
-
+            g_coro_stack.vm_stack = EG(vm_stack);
+            g_coro_stack.vm_stack_top = EG(vm_stack_top);
+            g_coro_stack.vm_stack_end = EG(vm_stack_end);
             EG(vm_stack) = current_coroutine_context->current_vm_stack;
-            EG(vm_stack_top) = (zval *)current_coroutine_context->current_vm_stack_top;
-            EG(vm_stack_end) = (zval *)current_coroutine_context->current_vm_stack_end;
+            EG(vm_stack_top) = current_coroutine_context->current_vm_stack_top;
+            EG(vm_stack_end) = current_coroutine_context->current_vm_stack_end;
             EG(current_execute_data) = current_coroutine_context->prev_execute_data;
             EG(current_execute_data)->opline++;
                 
@@ -204,6 +232,10 @@ static void coro_controler_run(){
             break;
     }
     zend_execute_ex(EG(current_execute_data));
+
+    EG(vm_stack) = g_coro_stack.vm_stack;
+    EG(vm_stack_top) = g_coro_stack.vm_stack_top;
+    EG(vm_stack_end) = g_coro_stack.vm_stack_end;
 
     //end
     free_coroutine_context(current_coroutine_context);
@@ -220,13 +252,33 @@ static void coro_controler_run(){
 
 PHP_FUNCTION(php_coro_yield)
 {
+
     current_coroutine_context->coro_state = CORO_YIELD;
     current_coroutine_context->current_vm_stack = EG(vm_stack);
-    current_coroutine_context->current_vm_stack_top = (intptr_t)EG(vm_stack_top);
-    current_coroutine_context->current_vm_stack_end = (intptr_t)EG(vm_stack_end);
+    current_coroutine_context->current_vm_stack_top = EG(vm_stack_top);
+    current_coroutine_context->current_vm_stack_end = EG(vm_stack_end);
+
+    EG(vm_stack) = g_coro_stack.vm_stack;
+    EG(vm_stack_top) = g_coro_stack.vm_stack_top;
+    EG(vm_stack_end) = g_coro_stack.vm_stack_end;
     current_coroutine_context->prev_execute_data = EG(current_execute_data)->prev_execute_data;
     longjmp(*current_coroutine_context->buf_ptr,CORO_YIELD);
 }
+
+// PHP_FUNCTION(php_coro_savestack)
+// {
+//     // current_coroutine_context->current_vm_stack = EG(vm_stack);
+//     // current_coroutine_context->current_vm_stack_top = EG(vm_stack_top);
+//     // current_coroutine_context->current_vm_stack_end = EG(vm_stack_end);
+//     g_coro_stack.vm_stack = EG(vm_stack);
+//     g_coro_stack.vm_stack_top = EG(vm_stack_top);
+//     g_coro_stack.vm_stack_end = EG(vm_stack_end);
+//     // EG(vm_stack) = g_coro_stack.vm_stack;
+//     // EG(vm_stack_top) = g_coro_stack.vm_stack_top;
+//     // EG(vm_stack_end) = g_coro_stack.vm_stack_end;
+    
+//     RETURN_TRUE;
+// }
 
 PHP_FUNCTION(php_coro_walk)
 {
@@ -260,6 +312,14 @@ PHP_FUNCTION(php_coro_next)
     if(current_coroutine_context->coro_state == CORO_DEFAULT){
 
         if(setjmp(*current_coroutine_context->buf_ptr) == CORO_DEFAULT){//first run
+            
+            g_coro_stack.vm_stack = EG(vm_stack);
+            g_coro_stack.vm_stack_top = EG(vm_stack_top);
+            g_coro_stack.vm_stack_end = EG(vm_stack_end);
+            EG(vm_stack) = current_coroutine_context->current_vm_stack;
+            EG(vm_stack_top) = current_coroutine_context->current_vm_stack_top;
+            EG(vm_stack_end) = current_coroutine_context->current_vm_stack_end;
+
             EG(current_execute_data) = current_coroutine_context->execute_data;
             zend_execute_ex(EG(current_execute_data));
         }else{//yield checkout
@@ -270,9 +330,13 @@ PHP_FUNCTION(php_coro_next)
     }else if(current_coroutine_context->coro_state == CORO_YIELD){//resume
         if(setjmp(*current_coroutine_context->buf_ptr) == CORO_DEFAULT){//first run
 
+            g_coro_stack.vm_stack = EG(vm_stack);
+            g_coro_stack.vm_stack_top = EG(vm_stack_top);
+            g_coro_stack.vm_stack_end = EG(vm_stack_end);
             EG(vm_stack) = current_coroutine_context->current_vm_stack;
-            EG(vm_stack_top) = (zval *)current_coroutine_context->current_vm_stack_top;
-            EG(vm_stack_end) = (zval *)current_coroutine_context->current_vm_stack_end;
+            EG(vm_stack_top) = current_coroutine_context->current_vm_stack_top;
+            EG(vm_stack_end) = current_coroutine_context->current_vm_stack_end;
+
             EG(current_execute_data) = current_coroutine_context->prev_execute_data;
             EG(current_execute_data)->opline++;
             zend_execute_ex(EG(current_execute_data));
@@ -393,6 +457,7 @@ PHP_MINFO_FUNCTION(coroutine_php)
  */
 const zend_function_entry coroutine_php_functions[] = {
     PHP_FE(php_coro_walk,	NULL)
+    // PHP_FE(php_coro_savestack,   NULL)
     PHP_FE(php_coro_state,    NULL)
     PHP_FE(php_coro_next,    NULL)
     PHP_FE(php_coro_current,    NULL)
