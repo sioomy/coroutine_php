@@ -55,7 +55,7 @@ free coroutine
 
     php_coro_free([cid])
 
-# demo:
+# demo1:
 
     function test(){
         echo "test start~======\n";
@@ -88,3 +88,56 @@ free coroutine
     var_dump(php_coro_next($cx2));
     var_dump(php_coro_next($cx2));
     var_dump(php_coro_next($cx1));
+
+# demo2:
+
+    $a = array("hh","params");
+    $cx = php_coro_create(function ($a){
+    var_dump($a);
+        echo "===this is function 1,line 1\n";
+        php_coro_yield();
+        echo "===this is function 1,line 2\n";
+        // php_coro_yield();
+        test();
+        echo "===thi====on test done\n";
+        echo "===thi====on test done bak\n";
+    },$a);
+    $cx2 = php_coro_create(function (){
+        echo "===this is function 2,line 1\n";
+        php_coro_yield();
+        echo "===this is function 2,line 2\n";
+    });
+    var_dump($cx2);
+    var_dump(php_coro_state($cx2));
+    //php_coro_free($cx2);
+    php_coro_create(function (){
+        global $cx2;
+        echo "===this is function 3,line 1\n";
+        // var_dump("-------cx2:",$cx2);
+        // var_dump(php_coro_state($cx2));
+        php_coro_yield();
+        echo "===this is function 3,line 2\n";
+     
+    });
+    php_coro_create(function (){
+        echo "===this is function 4,line 1\n";
+        php_coro_yield();
+        echo "===this is function 4,line 2\n";
+    });
+    php_coro_create(function (){
+        echo "===this is function 5,line 1\n";
+        php_coro_yield();
+        echo "===this is function 5,line 2\n";
+        php_coro_yield();
+        echo "===this is function 5,line 3\n";
+        php_coro_yield();
+        echo "===this is function 5,line 4\n";
+        php_coro_yield();
+        echo "===this is function 5,line 5\n";
+        php_coro_yield();
+        echo "===this is function 5,line 6\n";
+        php_coro_yield();
+        echo "===this is function 5,line 7\n";
+    });
+    php_coro_walk();
+
