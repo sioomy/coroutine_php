@@ -31,11 +31,11 @@ run all coroutine
 
 get coroutine state:
 
-0  defalut
+0 - defalut
 
-1  yield
+1 - yield
 
-2  end
+2 - end
 
     [state] php_coro_state([cid])
 
