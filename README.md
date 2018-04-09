@@ -4,17 +4,18 @@ This project is a php extension,which aims to provide a basic method to implemen
 # how to install
 step 1:
 
+```shell
   phpize
- 
+```
 step 2:    
- 
+```shell
   ./configure --enable-coroutine_php && make && make install
-
+```
 step 3:
 add this line in php.ini
-
+```shell
  extension=coroutine_php.so
-
+```
 # methods:
  
 create coroutine ,return a number of coroutine ptr.the param1 ,is a callback of coroutine,the param 2 is optional.
