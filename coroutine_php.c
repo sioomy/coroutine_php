@@ -265,20 +265,6 @@ PHP_FUNCTION(php_coro_yield)
     longjmp(*current_coroutine_context->buf_ptr,CORO_YIELD);
 }
 
-// PHP_FUNCTION(php_coro_savestack)
-// {
-//     // current_coroutine_context->current_vm_stack = EG(vm_stack);
-//     // current_coroutine_context->current_vm_stack_top = EG(vm_stack_top);
-//     // current_coroutine_context->current_vm_stack_end = EG(vm_stack_end);
-//     g_coro_stack.vm_stack = EG(vm_stack);
-//     g_coro_stack.vm_stack_top = EG(vm_stack_top);
-//     g_coro_stack.vm_stack_end = EG(vm_stack_end);
-//     // EG(vm_stack) = g_coro_stack.vm_stack;
-//     // EG(vm_stack_top) = g_coro_stack.vm_stack_top;
-//     // EG(vm_stack_end) = g_coro_stack.vm_stack_end;
-    
-//     RETURN_TRUE;
-// }
 
 PHP_FUNCTION(php_coro_walk)
 {
@@ -465,7 +451,6 @@ PHP_MINFO_FUNCTION(coroutine_php)
  */
 const zend_function_entry coroutine_php_functions[] = {
     PHP_FE(php_coro_walk,	NULL)
-    // PHP_FE(php_coro_savestack,   NULL)
     PHP_FE(php_coro_state,    NULL)
     PHP_FE(php_coro_next,    NULL)
     PHP_FE(php_coro_current,    NULL)
