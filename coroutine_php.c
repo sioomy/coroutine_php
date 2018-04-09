@@ -156,7 +156,7 @@ PHP_FUNCTION(php_coro_create)
     
 
 
-    if (EG(current_execute_data)) {
+    if (!EG(current_execute_data)) {
         context->execute_data->symbol_table = zend_rebuild_symbol_table();
     } else {
         context->execute_data->symbol_table = &EG(symbol_table);
