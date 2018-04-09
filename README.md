@@ -39,7 +39,7 @@ get coroutine state:
 
     > [state] php_coro_state([cid])
 
-git current coroutine cid:
+get current coroutine cid:
 
     > [cid] php_coro_current()
 
