@@ -322,6 +322,10 @@ PHP_FUNCTION(php_coro_next)
 
             EG(current_execute_data) = current_coroutine_context->execute_data;
             zend_execute_ex(EG(current_execute_data));
+
+            EG(vm_stack) = g_coro_stack.vm_stack;
+            EG(vm_stack_top) = g_coro_stack.vm_stack_top;
+            EG(vm_stack_end) = g_coro_stack.vm_stack_end;
         }else{//yield checkout
             RETURN_TRUE;
         }
@@ -340,6 +344,10 @@ PHP_FUNCTION(php_coro_next)
             EG(current_execute_data) = current_coroutine_context->prev_execute_data;
             EG(current_execute_data)->opline++;
             zend_execute_ex(EG(current_execute_data));
+
+            EG(vm_stack) = g_coro_stack.vm_stack;
+            EG(vm_stack_top) = g_coro_stack.vm_stack_top;
+            EG(vm_stack_end) = g_coro_stack.vm_stack_end;
 
         }else{//yield checkout
             RETURN_TRUE;
